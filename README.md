@@ -144,3 +144,36 @@ The agent will auto-discover it on next session.
 ## License
 
 MIT
+
+## OpenClaw Integration
+
+### Add to your AGENTS.md
+
+Add this to `~/.openclaw/workspace/AGENTS.md` so the agent knows about the tool:
+
+```markdown
+## Firecrawl Tool
+
+When the user asks to scrape, crawl, extract, or interact with websites:
+- Tool location: `~/.openclaw/skills/firecrawl/firecrawl-tool.js`
+- API key: set via `FIRECRAWL_API_KEY` env var
+- Commands: scrape, interact, interact:code, interact:stop, crawl, map, deep-search
+- Usage: `node ~/.openclaw/skills/firecrawl/firecrawl-tool.js <command> <args>`
+
+Capabilities:
+- Scrapes JS-rendered pages to clean Markdown (Shadow DOM, iFrames handled)
+- Interacts with pages: click, fill forms, scroll (natural language or Playwright)
+- Crawls entire sites recursively
+- Discovers all links on a site (free)
+- Deep search: main page + N sub-links in one command
+```
+
+### Example prompts for the agent
+
+```
+"Scrape https://react.dev and summarize the page"
+"Deep search https://docs.python.org for 'asyncio', extract 5 pages"
+"Map all links on https://example.com"
+"Interact with https://amazon.com - search for headphones and tell me the top 3 prices"
+"Crawl https://docs.firecrawl.dev, limit 20 pages"
+```
