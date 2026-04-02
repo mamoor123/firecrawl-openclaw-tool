@@ -36,8 +36,10 @@ async function api(method, path, body) {
   const res = await fetch(`${API}${path}`, opts);
   const data = await res.json();
   if (!res.ok) {
-    console.error(JSON.stringify({ error: data.error || res.statusText, status: res.status }));
-    process.exit(1);
+    const err = new Error(data.error || res.statusText);
+    err.status = res.status;
+    err.data = data;
+    throw err;
   }
   return data;
 }
@@ -47,14 +49,10 @@ async function pollJob(jobId, intervalMs = 2000, maxWaitMs = 120000) {
   while (Date.now() - start < maxWaitMs) {
     const status = await api('GET', `/crawl/${jobId}`);
     if (status.status === 'completed') return status;
-    if (status.status === 'failed') {
-      console.error(JSON.stringify({ error: 'Crawl job failed', details: status }));
-      process.exit(1);
-    }
+    if (status.status === 'failed') throw new Error('Crawl job failed');
     await new Promise(r => setTimeout(r, intervalMs));
   }
-  console.error(JSON.stringify({ error: 'Crawl timed out' }));
-  process.exit(1);
+  throw new Error('Crawl timed out');
 }
 
 async function scrape(url, extraOpts = {}) {
@@ -69,47 +67,74 @@ async function scrape(url, extraOpts = {}) {
 }
 
 async function cmdScrape(url) {
-  const data = await scrape(url);
-  console.log(JSON.stringify(data, null, 2));
+  try {
+    const data = await scrape(url);
+    console.log(JSON.stringify(data, null, 2));
+  } catch (e) {
+    console.error(JSON.stringify({ error: e.message, status: e.status }));
+    process.exit(1);
+  }
 }
 
 async function cmdInteract(scrapeId, prompt) {
-  const data = await api('POST', `/scrape/${scrapeId}/interact`, { prompt });
-  console.log(JSON.stringify(data, null, 2));
+  try {
+    const data = await api('POST', `/scrape/${scrapeId}/interact`, { prompt });
+    console.log(JSON.stringify(data, null, 2));
+  } catch (e) {
+    console.error(JSON.stringify({ error: e.message, status: e.status }));
+    process.exit(1);
+  }
 }
 
 async function cmdInteractCode(scrapeId, code) {
-  const data = await api('POST', `/scrape/${scrapeId}/interact`, { code });
-  console.log(JSON.stringify(data, null, 2));
+  try {
+    const data = await api('POST', `/scrape/${scrapeId}/interact`, { code });
+    console.log(JSON.stringify(data, null, 2));
+  } catch (e) {
+    console.error(JSON.stringify({ error: e.message, status: e.status }));
+    process.exit(1);
+  }
 }
 
 async function cmdInteractStop(scrapeId) {
-  const data = await api('DELETE', `/scrape/${scrapeId}/interact`);
-  console.log(JSON.stringify(data, null, 2));
+  try {
+    const data = await api('DELETE', `/scrape/${scrapeId}/interact`);
+    console.log(JSON.stringify(data, null, 2));
+  } catch (e) {
+    console.error(JSON.stringify({ error: e.message, status: e.status }));
+    process.exit(1);
+  }
 }
 
 async function cmdCrawl(url, limit = 10) {
-  const body = {
-    url,
-    limit: parseInt(limit),
-    scrapeOptions: {
-      formats: ['markdown'],
-      onlyMainContent: false,
-      waitFor: 3000,
-    },
-  };
-  const job = await api('POST', '/crawl', body);
-  if (!job.success && !job.id) {
-    console.error(JSON.stringify({ error: 'Failed to start crawl', details: job }));
+  try {
+    const body = {
+      url,
+      limit: parseInt(limit),
+      scrapeOptions: {
+        formats: ['markdown'],
+        onlyMainContent: false,
+        waitFor: 3000,
+      },
+    };
+    const job = await api('POST', '/crawl', body);
+    if (!job.success && !job.id) throw new Error('Failed to start crawl');
+    const result = await pollJob(job.id);
+    console.log(JSON.stringify(result, null, 2));
+  } catch (e) {
+    console.error(JSON.stringify({ error: e.message, status: e.status }));
     process.exit(1);
   }
-  const result = await pollJob(job.id);
-  console.log(JSON.stringify(result, null, 2));
 }
 
 async function cmdMap(url) {
-  const data = await api('POST', '/map', { url, limit: 100 });
-  console.log(JSON.stringify(data, null, 2));
+  try {
+    const data = await api('POST', '/map', { url, limit: 100 });
+    console.log(JSON.stringify(data, null, 2));
+  } catch (e) {
+    console.error(JSON.stringify({ error: e.message, status: e.status }));
+    process.exit(1);
+  }
 }
 
 async function cmdDeepSearch(url, query, limit = 5) {
@@ -120,23 +145,26 @@ async function cmdDeepSearch(url, query, limit = 5) {
 
   // Step 2: Map the site to find sub-links
   console.error(`[deep-search] Mapping site links...`);
-  let links = [];
+  let rawLinks = [];
   try {
     const mapResult = await api('POST', '/map', { url, limit: 50 });
-    links = mapResult?.links || [];
+    rawLinks = mapResult?.links || [];
   } catch (e) {
     // Fallback: extract links from markdown
     const md = mainPage?.data?.markdown || '';
     const linkMatches = md.match(/\[([^\]]+)\]\(([^)]+)\)/g) || [];
-    links = linkMatches.map(m => {
+    rawLinks = linkMatches.map(m => {
       const match = m.match(/\[([^\]]+)\]\(([^)]+)\)/);
-      return match ? match[2] : null;
+      return match ? { url: match[2], title: match[1] } : null;
     }).filter(Boolean);
   }
 
+  // Normalize: extract url from objects or use strings directly
+  const linkUrls = rawLinks.map(l => typeof l === 'string' ? l : l.url).filter(Boolean);
+
   // Filter to same-domain sub-links
   const baseUrl = new URL(url);
-  const subLinks = links
+  const subLinks = linkUrls
     .filter(l => {
       try {
         const u = new URL(l, url);
@@ -147,7 +175,7 @@ async function cmdDeepSearch(url, query, limit = 5) {
 
   console.error(`[deep-search] Found ${subLinks.length} sub-links, extracting...`);
 
-  // Step 3: Extract markdown from each sub-link
+  // Step 3: Extract markdown from each sub-link (continue on error)
   const results = [{
     url: url,
     title: mainPage?.data?.metadata?.title || '',
@@ -166,6 +194,7 @@ async function cmdDeepSearch(url, query, limit = 5) {
         source: 'sub-link',
       });
     } catch (e) {
+      console.error(`[deep-search] Failed: ${link} — ${e.message}`);
       results.push({ url: link, error: e.message, source: 'sub-link' });
     }
   }
